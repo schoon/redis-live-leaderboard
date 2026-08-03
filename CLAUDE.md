@@ -36,18 +36,21 @@ does, so I can learn the commands by reading the code. Not "add the score" —
 name the command, its arguments, and its Big-O if it's interesting:
 
 ```js
-// ZADD leaderboard <score> <member>
-// Sorted Set: adds or updates a member's score. O(log N).
-// GT means "only update if the new score is greater" — so we keep personal bests.
-await client.zAdd('leaderboard', { score, value: player }, { GT: true });
+// ZINCRBY leaderboard <points> <player>
+// Sorted Set: adds <points> to the member's score, creating it if absent.
+// Returns the new total. Atomic, so two simultaneous submits can't clobber
+// each other — no read-modify-write needed. O(log N).
+const total = await client.zIncrBy('leaderboard', points, player);
 
 // ZRANGE leaderboard 0 9 REV WITHSCORES
-// Sorted Sets are ordered low→high, so REV reads from the top. O(log N + M).
+// Sorted Sets are stored low→high, so REV reads from the top. WITHSCORES
+// returns scores alongside members. Indexes are inclusive. O(log N + M).
 const top = await client.zRangeWithScores('leaderboard', 0, 9, { REV: true });
 
-// ZREVRANK leaderboard <member>
-// This player's 0-based position counting from the highest score. O(log N).
-const rank = await client.zRevRank('leaderboard', player);
+// DEL leaderboard
+// Drops the whole key. Returns 0 if it was already gone, which is not an
+// error in Redis. O(M) for a Sorted Set — every member has to be freed.
+await client.del('leaderboard');
 ```
 
 Don't leave Redis calls bare, and don't strip these comments when refactoring.
@@ -64,7 +67,12 @@ One Sorted Set is the entire leaderboard — score is the sort key, member is th
 player name. Sorted Sets are exactly the right structure here, so resist the
 urge to mirror state into a Hash or a List.
 
-- `leaderboard` — Sorted Set. member = player name, score = points.
+- `leaderboard` — Sorted Set. member = player name, score = cumulative points.
+
+Scores are **running totals**, not personal bests: `POST /score` adds to the
+existing score via `ZINCRBY`, so posting 10 twice leaves the player on 20.
+Negative points subtract. Rank is never stored — it's the member's position in a
+`REV` range, so nothing needs sorting in JavaScript.
 
 If player metadata (avatar, joined-at) is ever needed, add `player:<name>` as a
 Hash and use colon-separated key names to match.
@@ -74,19 +82,22 @@ Hash and use colon-separated key names to match.
 ```
 server.js        # Express app + Redis client + routes, all in one file
 public/
-  index.html     # the leaderboard page
-  app.js         # fetch + render, polls the API on a timer
+  index.html     # the whole frontend: markup, styles and JS in one file
 ```
 
-Keep it at this size. If `server.js` genuinely outgrows one file, split routes
-out — but don't pre-split it.
+Keep it at this size. The frontend is deliberately a single self-contained
+`index.html` — don't split the CSS or JS out into separate files. If `server.js`
+genuinely outgrows one file, split routes out, but don't pre-split it.
 
 ## Client setup notes
 
 node-redis v4+ requires an explicit `connect()`, and its command methods are
-camelCase versions of the Redis commands (`zAdd` → `ZADD`, `zRangeWithScores` →
-`ZRANGE ... WITHSCORES`). Create **one** client at startup and reuse it across
-requests — don't open a connection per request.
+camelCase versions of the Redis commands (`zIncrBy` → `ZINCRBY`,
+`zRangeWithScores` → `ZRANGE ... WITHSCORES`). Create **one** client at startup
+and reuse it across requests — don't open a connection per request.
+
+`ZREVRANGE` is deprecated as of Redis 6.2; use `ZRANGE ... REV` instead, which
+is what `{ REV: true }` compiles to.
 
 ## Frontend
 
