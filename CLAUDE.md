@@ -1,7 +1,10 @@
-# redis-leaderboard
+# redis-live-leaderboard
 
 A live leaderboard backed by Redis. Small, single-purpose learning project — a
 Node/Express API over a Redis Sorted Set, with a plain HTML/JS page that polls it.
+
+Published at <https://github.com/schoon/redis-live-leaderboard>. The local
+directory is still named `redis-leaderboard`; the repo name is the canonical one.
 
 ## Stack
 

@@ -1,7 +1,10 @@
-# redis-leaderboard
+# redis-live-leaderboard
 
 A live leaderboard backed by a single Redis Sorted Set. Node + Express API,
 plain HTML/JS frontend that polls it every 2 seconds.
+
+Built as a learning project for Redis Sorted Sets — every Redis call in the
+source is commented with the command it issues and its complexity.
 
 ## Requirements
 
@@ -81,9 +84,28 @@ You can watch it from the CLI while the app runs:
 redis-cli zrange leaderboard 0 -1 REV WITHSCORES
 ```
 
+## Run it on localhost only
+
+**There is no authentication of any kind.** Anyone who can reach the server can
+post arbitrary scores, and `POST /reset` deletes the entire leaderboard without
+so much as a confirmation. There is no rate limiting either, so a single client
+can flood the board.
+
+That is a deliberate choice for a local learning project, and it means this is
+**not safe to expose to a network**. Before running it anywhere but your own
+machine you would need, at minimum, auth on the write routes, rate limiting, and
+a Redis instance that isn't reachable from the internet.
+
+Two things to keep in mind if you do run it beyond localhost:
+
+- Binding Express to `0.0.0.0` (or port-forwarding it) hands the reset endpoint
+  to your whole network.
+- Redis itself should stay bound to `127.0.0.1`. An open Redis port with no
+  password is a well-known target, and this app sets no password.
+
 ## Notes
 
-- No authentication — anyone who can reach the server can post a score or
-  reset the board. It's a local learning project.
 - Scores persist as long as Redis does. `docker run` without a volume means
   the board is lost when the container is removed.
+- Player names are used directly as Sorted Set members, so two players with the
+  same name share one score.
