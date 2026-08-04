@@ -1,7 +1,12 @@
 # redis-live-leaderboard
 
-A live leaderboard backed by a single Redis Sorted Set. Node + Express API,
-plain HTML/JS frontend that polls it every 2 seconds.
+A live leaderboard backed by Redis Sorted Sets. Node + Express API, plain HTML/JS
+frontend that polls it every 2 seconds.
+
+Two boards, shown side by side: an **all-time** board that never expires, and a
+**weekly** board keyed by ISO week (`leaderboard:2026-W32`) that expires 8 days
+after its last write, so old weeks clean themselves up. Every score counts
+toward both.
 
 Built as a learning project for Redis Sorted Sets — every Redis call in the
 source is commented with the command it issues and its complexity.
@@ -42,47 +47,101 @@ PORT=4000 REDIS_URL=redis://localhost:6380 npm start
 
 ## API
 
-| Method | Route                   | Body / query        | Description |
-| ------ | ----------------------- | ------------------- | ----------- |
-| `POST` | `/score`                | `{ name, points }`  | Adds `points` to that player's total. Returns the new total. |
-| `GET`  | `/leaderboard?top=10`   | `top` (1–100, default 10) | Top N players, highest first. |
-| `POST` | `/reset`                | —                   | Clears the leaderboard. |
+| Method | Route                          | Body / query        | Description |
+| ------ | ------------------------------ | ------------------- | ----------- |
+| `POST` | `/score`                       | `{ name, points }`  | Adds `points` to that player's total on **both** boards. Returns both new totals. |
+| `GET`  | `/leaderboard?top=10`          | `top` (1–100, default 10) | Top N all-time, highest first. |
+| `GET`  | `/leaderboard/weekly?top=10`   | `top` (1–100, default 10) | Top N for the current ISO week, plus the week label. |
+| `POST` | `/reset`                       | —                   | Clears the all-time board and the current week's board. |
 
 `points` may be negative, which subtracts.
+
+The two read routes return different shapes — the weekly one wraps its rows so
+it can also tell you which week you're looking at:
 
 ```bash
 curl -X POST localhost:3000/score \
   -H 'Content-Type: application/json' \
   -d '{"name":"ada","points":50}'
+# {"name":"ada","points":50,"weekly":{"week":"2026-W32","points":50}}
 
 curl 'localhost:3000/leaderboard?top=5'
+# [{"rank":1,"name":"ada","points":50}]
+
+curl 'localhost:3000/leaderboard/weekly?top=5'
+# {"week":"2026-W32","players":[{"rank":1,"name":"ada","points":50}]}
 
 curl -X POST localhost:3000/reset
+# {"ok":true,"keysDeleted":2}
 ```
 
 ## How the Redis part works
 
-Everything lives in one Sorted Set at the key `leaderboard`, where each member
-is a player name and its score is their point total. Three commands cover the
-whole app:
+There are two Sorted Sets. In both, each member is a player name and its score
+is that player's point total:
 
+| Key | Holds | Expires |
+| --- | ----- | ------- |
+| `leaderboard` | all-time totals | never |
+| `leaderboard:2026-W32` | totals for one ISO week | 8 days after its last write |
+
+A score submission writes to both, in a single transaction:
+
+- **`MULTI` / `EXEC`** — wraps the three writes below so they run as one unit.
+  Redis executes a transaction without interleaving other clients' commands, so
+  nobody can observe one board updated and not the other, and the two can't
+  drift apart if the process dies mid-request. It's also one round trip instead
+  of three.
 - **`ZINCRBY leaderboard <points> <name>`** — adds to a player's score,
   creating them if they're new. Atomic, so concurrent submissions can't
-  overwrite each other. O(log N).
-- **`ZRANGE leaderboard 0 9 REV WITHSCORES`** — reads the top 10. Sorted Sets
-  are stored low→high, so `REV` reads from the top; `WITHSCORES` returns the
-  scores too. (`ZREVRANGE` does the same thing but is deprecated as of Redis
-  6.2.) O(log N + M).
-- **`DEL leaderboard`** — clears the board. O(M).
+  overwrite each other. Returns the new total. O(log N).
+- **`ZINCRBY leaderboard:<week> <points> <name>`** — same again against this
+  week's key, which Redis creates on first write. There's no "create the key"
+  step; writing to a missing Sorted Set makes it.
+- **`EXPIRE leaderboard:<week> 691200`** — 8 days, so old weeks delete
+  themselves and the keyspace doesn't grow forever. O(1).
+
+Reads use:
+
+- **`ZRANGE <key> 0 9 REV WITHSCORES`** — reads the top 10. Sorted Sets are
+  stored low→high, so `REV` reads from the top; `WITHSCORES` returns the scores
+  too. (`ZREVRANGE` does the same thing but is deprecated as of Redis 6.2.)
+  Reading a week nobody has scored in yet returns an empty array rather than an
+  error. O(log N + M).
+- **`DEL leaderboard leaderboard:<week>`** — `DEL` takes several keys at once
+  and returns how many existed. O(M).
 
 Ranking is free: the position in that `REV` range *is* the rank, so nothing
 needs to be sorted in JavaScript.
 
-You can watch it from the CLI while the app runs:
+### Two things to know about the week keys
+
+**The week label is ISO-8601, computed in UTC.** ISO weeks start on Monday, and
+a week belongs to whichever year its *Thursday* falls in — which is why
+2025-12-29 lives in `leaderboard:2026-W01`, and 2027-01-01 lives in
+`leaderboard:2026-W53`. Using UTC means the rollover happens at the same instant
+no matter where the server is.
+
+**The TTL restarts on every write, not when the week ends.** `EXPIRE` is called
+on each submission, so the countdown runs from the week's *last* score. A week
+that stops getting writes on Sunday survives into the following Monday-plus-8.
+That still cleans itself up, which is all this needs — the alternative
+(`EXPIRE ... NX`, Redis 7.0+, sets a TTL only if there isn't one) would pin the
+expiry to the first write but adds a version dependency for no real gain here.
+
+You can watch both boards from the CLI while the app runs:
 
 ```bash
 redis-cli zrange leaderboard 0 -1 REV WITHSCORES
+redis-cli zrange "leaderboard:$(date -u +%G-W%V)" 0 -1 REV WITHSCORES
+
+# which week keys exist, and how long each has left
+redis-cli keys 'leaderboard:*'
+redis-cli ttl "leaderboard:$(date -u +%G-W%V)"
 ```
+
+`date -u +%G-W%V` is the shell's own ISO year and week, so it should always
+agree with the key the app is writing to.
 
 ## Run it on localhost only
 

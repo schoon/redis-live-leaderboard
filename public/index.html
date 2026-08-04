@@ -8,12 +8,13 @@
     :root { color-scheme: light dark; }
     body {
       font-family: system-ui, -apple-system, sans-serif;
-      max-width: 40rem;
+      max-width: 52rem;
       margin: 3rem auto;
       padding: 0 1rem;
       line-height: 1.5;
     }
     h1 { margin-bottom: 0.25rem; }
+    h2 { font-size: 1rem; margin: 0; }
     .sub { opacity: 0.6; font-size: 0.875rem; margin-top: 0; }
     form { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1.5rem 0; }
     input {
@@ -29,23 +30,38 @@
       background: rgba(128, 128, 128, 0.12); color: inherit;
     }
     button:hover { background: rgba(128, 128, 128, 0.25); }
+
+    /* Two boards side by side, stacking on narrow screens. */
+    .boards { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; }
+    @media (max-width: 40rem) {
+      .boards { grid-template-columns: 1fr; gap: 2rem; }
+    }
+    .board-head {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 0.5rem; margin-bottom: 0.5rem;
+    }
+    .board-tag {
+      font-size: 0.75rem; opacity: 0.6; font-variant-numeric: tabular-nums;
+    }
+
     table { width: 100%; border-collapse: collapse; }
     th, td {
-      text-align: left; padding: 0.5rem;
+      text-align: left; padding: 0.4rem 0.5rem;
       border-bottom: 1px solid rgba(128, 128, 128, 0.25);
     }
+    th { font-size: 0.75rem; text-transform: uppercase; opacity: 0.6; }
     th:last-child, td:last-child { text-align: right; }
-    td.rank { width: 3rem; opacity: 0.6; font-variant-numeric: tabular-nums; }
+    td.rank { width: 2.5rem; opacity: 0.6; font-variant-numeric: tabular-nums; }
     td.points { font-variant-numeric: tabular-nums; font-weight: 600; }
     .empty { opacity: 0.6; font-style: italic; }
-    .status { min-height: 1.25rem; font-size: 0.875rem; margin-top: 1rem; }
+    .status { min-height: 1.25rem; font-size: 0.875rem; margin-top: 1.5rem; }
     .status.error { color: #d33; }
-    footer { margin-top: 2rem; }
+    footer { margin-top: 1rem; }
   </style>
 </head>
 <body>
   <h1>Live Leaderboard</h1>
-  <p class="sub">Refreshes every 2 seconds.</p>
+  <p class="sub">Refreshes every 2 seconds. Scores count toward both boards.</p>
 
   <form id="score-form">
     <input name="name" placeholder="Player name" autocomplete="off" required>
@@ -53,24 +69,49 @@
     <button type="submit">Add points</button>
   </form>
 
-  <table>
-    <thead>
-      <tr><th>#</th><th>Player</th><th>Points</th></tr>
-    </thead>
-    <tbody id="rows">
-      <tr><td colspan="3" class="empty">Loading…</td></tr>
-    </tbody>
-  </table>
+  <div class="boards">
+    <section>
+      <div class="board-head">
+        <h2>All time</h2>
+        <span class="board-tag">leaderboard</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Player</th><th>Points</th></tr>
+        </thead>
+        <tbody id="all-time-rows">
+          <tr><td colspan="3" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="board-head">
+        <h2>This week</h2>
+        <span class="board-tag" id="week-tag">…</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Player</th><th>Points</th></tr>
+        </thead>
+        <tbody id="weekly-rows">
+          <tr><td colspan="3" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
 
   <div class="status" id="status"></div>
 
   <footer>
-    <button id="reset">Reset leaderboard</button>
+    <button id="reset">Reset both boards</button>
   </footer>
 
   <script>
     const form = document.getElementById('score-form');
-    const rowsEl = document.getElementById('rows');
+    const allTimeRows = document.getElementById('all-time-rows');
+    const weeklyRows = document.getElementById('weekly-rows');
+    const weekTag = document.getElementById('week-tag');
     const statusEl = document.getElementById('status');
     const resetBtn = document.getElementById('reset');
 
@@ -79,14 +120,20 @@
       statusEl.className = isError ? 'status error' : 'status';
     }
 
-    function render(players) {
+    function render(tbody, players, emptyMessage) {
       if (players.length === 0) {
-        rowsEl.innerHTML = '<tr><td colspan="3" class="empty">No scores yet.</td></tr>';
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 3;
+        td.className = 'empty';
+        td.textContent = emptyMessage;
+        tr.append(td);
+        tbody.replaceChildren(tr);
         return;
       }
       // Build with textContent rather than string-concatenated HTML so a player
       // named "<script>" is shown, not executed.
-      rowsEl.replaceChildren(...players.map((p) => {
+      tbody.replaceChildren(...players.map((p) => {
         const tr = document.createElement('tr');
         const rank = document.createElement('td');
         rank.className = 'rank';
@@ -101,11 +148,22 @@
       }));
     }
 
+    async function getJSON(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }
+
     async function refresh() {
       try {
-        const res = await fetch('/leaderboard?top=10');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        render(await res.json());
+        // Both boards in parallel, so one slow request doesn't stall the other.
+        const [allTime, weekly] = await Promise.all([
+          getJSON('/leaderboard?top=10'),
+          getJSON('/leaderboard/weekly?top=10'),
+        ]);
+        render(allTimeRows, allTime, 'No scores yet.');
+        render(weeklyRows, weekly.players, 'Nothing scored this week.');
+        weekTag.textContent = 'leaderboard:' + weekly.week;
         if (statusEl.classList.contains('error')) setStatus('');
       } catch (err) {
         setStatus('Could not reach the server — retrying…', true);
@@ -126,7 +184,9 @@
         });
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || 'HTTP ' + res.status);
-        setStatus(`${body.name} is now on ${body.points}.`);
+        setStatus(
+          `${body.name}: ${body.points} all time, ${body.weekly.points} this week.`
+        );
         form.name.value = '';
         form.name.focus();
         refresh();
@@ -136,11 +196,11 @@
     });
 
     resetBtn.addEventListener('click', async () => {
-      if (!confirm('Clear every score?')) return;
+      if (!confirm('Clear the all-time board and this week\'s board?')) return;
       try {
         const res = await fetch('/reset', { method: 'POST' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        setStatus('Leaderboard cleared.');
+        setStatus('Both boards cleared.');
         refresh();
       } catch (err) {
         setStatus(err.message, true);

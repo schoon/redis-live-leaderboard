@@ -66,16 +66,33 @@ with a sensible status. No custom error classes or error middleware hierarchies.
 
 ## Redis data model
 
-One Sorted Set is the entire leaderboard — score is the sort key, member is the
-player name. Sorted Sets are exactly the right structure here, so resist the
-urge to mirror state into a Hash or a List.
+Sorted Sets hold everything — score is the sort key, member is the player name.
+They're exactly the right structure here, so resist the urge to mirror state into
+a Hash or a List.
 
-- `leaderboard` — Sorted Set. member = player name, score = cumulative points.
+- `leaderboard` — Sorted Set. All-time totals. No TTL.
+- `leaderboard:<ISO week>` — Sorted Set, e.g. `leaderboard:2026-W32`. One week's
+  totals. TTL of 8 days.
 
 Scores are **running totals**, not personal bests: `POST /score` adds to the
 existing score via `ZINCRBY`, so posting 10 twice leaves the player on 20.
 Negative points subtract. Rank is never stored — it's the member's position in a
 `REV` range, so nothing needs sorting in JavaScript.
+
+**Every write goes to both boards, inside one `MULTI`/`EXEC`.** Don't add a code
+path that touches only one of them — the boards are meant to stay consistent, and
+the transaction is what guarantees it. If you add a third board (monthly, say),
+add it to the same transaction.
+
+**Week keys are ISO-8601, computed in UTC** by `isoWeekLabel()` in `server.js`.
+ISO weeks start Monday and belong to whichever year their Thursday falls in, so
+2025-12-29 is `2026-W01`. Don't swap in a naive "day of year / 7" — it breaks
+across New Year. There are boundary cases worth keeping right; if you change that
+function, check late-December and early-January dates.
+
+The weekly TTL is refreshed by an unconditional `EXPIRE` on every write, so it
+runs from the week's last score rather than its first. That's deliberate: it
+still self-cleans, and it avoids depending on `EXPIRE ... NX` (Redis 7.0+).
 
 If player metadata (avatar, joined-at) is ever needed, add `player:<name>` as a
 Hash and use colon-separated key names to match.
