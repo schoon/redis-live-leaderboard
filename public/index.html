@@ -75,7 +75,19 @@
     .empty { opacity: 0.6; font-style: italic; }
     .status { min-height: 1.25rem; font-size: 0.875rem; margin-top: 1.5rem; }
     .status.error { color: #d33; }
-    footer { margin-top: 1rem; }
+    footer {
+      margin-top: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    footer a {
+      font-size: 0.875rem; color: inherit; opacity: 0.6;
+      text-decoration-thickness: 1px; text-underline-offset: 2px;
+    }
+    footer a:hover { opacity: 1; }
   </style>
 </head>
 <body>
@@ -131,6 +143,8 @@
 
   <footer>
     <button id="reset">Reset both boards</button>
+    <a href="https://github.com/schoon/redis-live-leaderboard"
+       target="_blank" rel="noopener noreferrer">Source on GitHub ↗</a>
   </footer>
 
   <script>
