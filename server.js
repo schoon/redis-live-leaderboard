@@ -152,6 +152,59 @@ app.get('/leaderboard/weekly', async (req, res) => {
   }
 });
 
+// GET /rank/:name — one player's position and score on the all-time board.
+app.get('/rank/:name', async (req, res) => {
+  // Trim to match POST /score, which trims before storing.
+  const name = req.params.name.trim();
+
+  if (!name) {
+    return res.status(400).json({ error: 'name is required' });
+  }
+
+  try {
+    // One MULTI so all three answers describe the same instant. Read
+    // separately, a score submitted between the calls could hand back a rank
+    // and a score that never coexisted.
+    const [zeroBasedRank, score, total] = await client
+      .multi()
+      // ZREVRANK leaderboard <name>
+      // Position counting DOWN from the highest score, 0-based: the leader is
+      // 0. Returns nil if the member isn't in the set. O(log N).
+      .zRevRank(ALL_TIME_KEY, name)
+      // ZSCORE leaderboard <name>
+      // That member's score, or nil if they aren't in the set. O(1).
+      .zScore(ALL_TIME_KEY, name)
+      // ZCARD leaderboard
+      // How many members the set holds, so the rank can be shown as
+      // "3 of 12". O(1).
+      .zCard(ALL_TIME_KEY)
+      .exec();
+
+    // Redis reports a missing member as nil, not as an error. A player with a
+    // score of 0 is still ON the board, so test for null rather than
+    // falsiness — 0 is a real rank and a real score.
+    if (zeroBasedRank === null || score === null) {
+      return res.status(404).json({
+        found: false,
+        name,
+        message: `${name} isn't on the board yet.`,
+      });
+    }
+
+    res.json({
+      found: true,
+      name,
+      // ZREVRANK is 0-based; humans count from 1.
+      rank: zeroBasedRank + 1,
+      outOf: total,
+      points: score,
+    });
+  } catch (err) {
+    console.error('GET /rank failed:', err.message);
+    res.status(500).json({ error: 'could not look up rank' });
+  }
+});
+
 // POST /reset — clears the all-time board and the current week's board.
 // Earlier weeks are left alone; their TTLs will take care of them.
 app.post('/reset', async (req, res) => {

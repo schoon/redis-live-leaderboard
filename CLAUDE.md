@@ -84,6 +84,15 @@ path that touches only one of them — the boards are meant to stay consistent, 
 the transaction is what guarantees it. If you add a third board (monthly, say),
 add it to the same transaction.
 
+**Ranks are 0-based in Redis and 1-based in the API.** `ZREVRANK` returns 0 for
+the leader; every rank leaving the server has 1 added. Keep that conversion at
+the edge, and don't let a 0-based rank reach the UI.
+
+**Redis reports a missing member as nil, not an error**, and `0` is a legitimate
+rank *and* a legitimate score. Check `=== null` rather than falsiness when
+deciding whether a player exists — a truthiness check would report the leader, or
+anyone on zero points, as not found.
+
 **Week keys are ISO-8601, computed in UTC** by `isoWeekLabel()` in `server.js`.
 ISO weeks start Monday and belong to whichever year their Thursday falls in, so
 2025-12-29 is `2026-W01`. Don't swap in a naive "day of year / 7" — it breaks

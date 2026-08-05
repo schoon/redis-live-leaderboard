@@ -31,6 +31,25 @@
     }
     button:hover { background: rgba(128, 128, 128, 0.25); }
 
+    /* "Find my rank" result card. */
+    .rank-result {
+      margin: -0.5rem 0 1.5rem;
+      padding: 0.6rem 0.9rem;
+      border: 1px solid rgba(128, 128, 128, 0.35);
+      border-radius: 8px;
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .rank-result .place {
+      font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums;
+    }
+    .rank-result .who { font-weight: 600; }
+    .rank-result .muted { opacity: 0.65; font-size: 0.875rem; }
+    .rank-result.missing { border-style: dashed; }
+    .rank-result.missing .muted { opacity: 0.8; }
+
     /* Two boards side by side, stacking on narrow screens. */
     .boards { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; }
     @media (max-width: 40rem) {
@@ -68,6 +87,13 @@
     <input name="points" type="number" placeholder="Points" value="10" step="any" required>
     <button type="submit">Add points</button>
   </form>
+
+  <form id="rank-form">
+    <input name="name" placeholder="Find a player's rank" autocomplete="off">
+    <button type="submit">Find rank</button>
+  </form>
+
+  <div class="rank-result" id="rank-result" hidden></div>
 
   <div class="boards">
     <section>
@@ -109,11 +135,17 @@
 
   <script>
     const form = document.getElementById('score-form');
+    const rankForm = document.getElementById('rank-form');
+    const rankResult = document.getElementById('rank-result');
     const allTimeRows = document.getElementById('all-time-rows');
     const weeklyRows = document.getElementById('weekly-rows');
     const weekTag = document.getElementById('week-tag');
     const statusEl = document.getElementById('status');
     const resetBtn = document.getElementById('reset');
+
+    // The name whose rank is currently on screen. Kept so the 2-second poll
+    // keeps it up to date as other people score, instead of it going stale.
+    let watching = '';
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message;
@@ -154,12 +186,51 @@
       return res.json();
     }
 
+    function span(className, text) {
+      const el = document.createElement('span');
+      el.className = className;
+      el.textContent = text;
+      return el;
+    }
+
+    async function refreshRank() {
+      if (!watching) {
+        rankResult.hidden = true;
+        rankResult.replaceChildren();
+        return;
+      }
+
+      // encodeURIComponent so names with spaces or slashes survive the URL.
+      const res = await fetch('/rank/' + encodeURIComponent(watching));
+      const body = await res.json();
+      rankResult.hidden = false;
+
+      // 404 is the expected answer for "not on the board", not a failure.
+      if (res.status === 404) {
+        rankResult.className = 'rank-result missing';
+        rankResult.replaceChildren(
+          span('who', body.name),
+          span('muted', "isn't on the board yet — names are case-sensitive.")
+        );
+        return;
+      }
+      if (!res.ok) throw new Error(body.error || 'HTTP ' + res.status);
+
+      rankResult.className = 'rank-result';
+      rankResult.replaceChildren(
+        span('place', '#' + body.rank),
+        span('who', body.name),
+        span('muted', `of ${body.outOf} · ${body.points} points all time`)
+      );
+    }
+
     async function refresh() {
       try {
-        // Both boards in parallel, so one slow request doesn't stall the other.
+        // All in parallel, so one slow request doesn't stall the others.
         const [allTime, weekly] = await Promise.all([
           getJSON('/leaderboard?top=10'),
           getJSON('/leaderboard/weekly?top=10'),
+          refreshRank(),
         ]);
         render(allTimeRows, allTime, 'No scores yet.');
         render(weeklyRows, weekly.players, 'Nothing scored this week.');
@@ -190,6 +261,17 @@
         form.name.value = '';
         form.name.focus();
         refresh();
+      } catch (err) {
+        setStatus(err.message, true);
+      }
+    });
+
+    rankForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      // Submitting an empty box clears the result.
+      watching = rankForm.name.value.trim();
+      try {
+        await refreshRank();
       } catch (err) {
         setStatus(err.message, true);
       }

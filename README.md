@@ -52,6 +52,7 @@ PORT=4000 REDIS_URL=redis://localhost:6380 npm start
 | `POST` | `/score`                       | `{ name, points }`  | Adds `points` to that player's total on **both** boards. Returns both new totals. |
 | `GET`  | `/leaderboard?top=10`          | `top` (1–100, default 10) | Top N all-time, highest first. |
 | `GET`  | `/leaderboard/weekly?top=10`   | `top` (1–100, default 10) | Top N for the current ISO week, plus the week label. |
+| `GET`  | `/rank/:name`                  | —                   | One player's all-time rank (1-based) and score. `404` if they aren't on the board. |
 | `POST` | `/reset`                       | —                   | Clears the all-time board and the current week's board. |
 
 `points` may be negative, which subtracts.
@@ -71,9 +72,18 @@ curl 'localhost:3000/leaderboard?top=5'
 curl 'localhost:3000/leaderboard/weekly?top=5'
 # {"week":"2026-W32","players":[{"rank":1,"name":"ada","points":50}]}
 
+curl localhost:3000/rank/ada
+# {"found":true,"name":"ada","rank":1,"outOf":1,"points":50}
+
+curl localhost:3000/rank/nobody
+# 404  {"found":false,"name":"nobody","message":"nobody isn't on the board yet."}
+
 curl -X POST localhost:3000/reset
 # {"ok":true,"keysDeleted":2}
 ```
+
+Names are matched exactly, so `/rank/Ada` will not find a player stored as
+`ada`. Leading and trailing whitespace is trimmed, matching `POST /score`.
 
 ## How the Redis part works
 
@@ -110,6 +120,21 @@ Reads use:
   error. O(log N + M).
 - **`DEL leaderboard leaderboard:<week>`** — `DEL` takes several keys at once
   and returns how many existed. O(M).
+
+Looking up one player uses another three, again in a single `MULTI` so all three
+answers describe the same instant:
+
+- **`ZREVRANK leaderboard <name>`** — the member's position counting down from
+  the highest score. **0-based**, so the leader is `0` and the API adds 1 before
+  returning it. Returns nil if the member isn't in the set. O(log N).
+- **`ZSCORE leaderboard <name>`** — that member's score, or nil if absent. O(1).
+- **`ZCARD leaderboard`** — how many members the set holds, so a rank can be
+  shown as "3 of 12". O(1).
+
+Note that Redis answers "no such member" with **nil, not an error** — and that a
+player sitting at rank 0 with a score of 0 is a perfectly real player. So the
+not-found check tests for nil specifically rather than for falsiness; treating `0`
+as "missing" would hide the leader and anyone on zero points.
 
 Ranking is free: the position in that `REV` range *is* the rank, so nothing
 needs to be sorted in JavaScript.
