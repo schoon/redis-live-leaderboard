@@ -1,6 +1,9 @@
 const path = require('path');
 const express = require('express');
-const { createClient } = require('redis');
+// @redis/client is the core of node-redis. The `redis` meta-package is the same
+// client plus command sets for the Bloom, JSON, Search, Graph and TimeSeries
+// modules — none of which this app uses, so we depend on the core directly.
+const { createClient } = require('@redis/client');
 
 const PORT = process.env.PORT || 3000;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';

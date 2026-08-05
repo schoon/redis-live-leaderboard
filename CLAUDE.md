@@ -9,7 +9,10 @@ directory is still named `redis-leaderboard`; the repo name is the canonical one
 ## Stack
 
 - **Backend:** Node.js + Express
-- **Redis client:** the official [`redis`](https://github.com/redis/node-redis) npm package (node-redis v4+)
+- **Redis client:** [`@redis/client`](https://github.com/redis/node-redis) — the
+  core of the official node-redis v4 client. Deliberately *not* the `redis`
+  meta-package, which is the same client plus command sets for the Bloom, JSON,
+  Search, Graph and TimeSeries modules that this app never calls.
 - **Frontend:** plain HTML + vanilla JS. No framework, no build step, no bundler.
 - **Redis:** `redis://localhost:6379`
 
@@ -58,8 +61,13 @@ await client.del('leaderboard');
 
 Don't leave Redis calls bare, and don't strip these comments when refactoring.
 
-**Minimal dependencies.** `express` and `redis` are the whole dependency list.
-Ask before adding anything else.
+**Minimal dependencies.** `express` and `@redis/client` are the whole dependency
+list. Ask before adding anything else.
+
+Don't "fix" the import back to `require('redis')` — the meta-package drags in
+five module command sets (~1.3 MB) that nothing here uses. If a Redis module
+ever *is* needed, add that one package (`@redis/json`, say) rather than the
+meta-package.
 
 **Errors:** let them surface. Log to console, return a plain JSON `{ error }`
 with a sensible status. No custom error classes or error middleware hierarchies.
